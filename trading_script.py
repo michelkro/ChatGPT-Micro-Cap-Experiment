@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast,Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, cast
 import os
 import warnings
 
@@ -194,6 +194,13 @@ class FetchResult:
     df: pd.DataFrame
     source: str  # "yahoo" | "stooq-pdr" | "stooq-csv" | "yahoo:<proxy>-proxy" | "empty"
 
+_PRICE_CACHE: dict[tuple[str, pd.Timestamp, pd.Timestamp, tuple[tuple[str, Any], ...]], FetchResult] = {}
+
+
+def clear_price_cache() -> None:
+    """Empty the in-memory price cache used by :func:`download_price_data`."""
+    _PRICE_CACHE.clear()
+
 def _to_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         try:
@@ -339,21 +346,31 @@ def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
     kwargs.setdefault("threads", False)
 
     s, e = _weekend_safe_range(period, start, end)
+    cache_key = (ticker.upper(), s, e, tuple(sorted(kwargs.items())))
+    cached = _PRICE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
 
     # ---------- 1) Yahoo (date-bounded) ----------
     df_y = _yahoo_download(ticker, start=s, end=e, **kwargs)
     if isinstance(df_y, pd.DataFrame) and not df_y.empty:
-        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_y)), "yahoo")
+        result = FetchResult(_normalize_ohlcv(_to_datetime_index(df_y)), "yahoo")
+        _PRICE_CACHE[cache_key] = result
+        return result
 
     # ---------- 2) Stooq via pandas-datareader ----------
     df_s = _stooq_download(ticker, start=s, end=e)
     if isinstance(df_s, pd.DataFrame) and not df_s.empty:
-        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_s)), "stooq-pdr")
+        result = FetchResult(_normalize_ohlcv(_to_datetime_index(df_s)), "stooq-pdr")
+        _PRICE_CACHE[cache_key] = result
+        return result
 
     # ---------- 3) Stooq direct CSV ----------
     df_csv = _stooq_csv_download(ticker, s, e)
     if isinstance(df_csv, pd.DataFrame) and not df_csv.empty:
-        return FetchResult(_normalize_ohlcv(_to_datetime_index(df_csv)), "stooq-csv")
+        result = FetchResult(_normalize_ohlcv(_to_datetime_index(df_csv)), "stooq-csv")
+        _PRICE_CACHE[cache_key] = result
+        return result
 
     # ---------- 4) Proxy indices if applicable ----------
     proxy_map = {"^GSPC": "SPY", "^RUT": "IWM"}
@@ -361,11 +378,15 @@ def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
     if proxy:
         df_proxy = _yahoo_download(proxy, start=s, end=e, **kwargs)
         if isinstance(df_proxy, pd.DataFrame) and not df_proxy.empty:
-            return FetchResult(_normalize_ohlcv(_to_datetime_index(df_proxy)), f"yahoo:{proxy}-proxy")
+            result = FetchResult(_normalize_ohlcv(_to_datetime_index(df_proxy)), f"yahoo:{proxy}-proxy")
+            _PRICE_CACHE[cache_key] = result
+            return result
 
     # ---------- Nothing worked ----------
     empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Adj Close", "Volume"])
-    return FetchResult(empty, "empty")
+    result = FetchResult(empty, "empty")
+    _PRICE_CACHE[cache_key] = result
+    return result
 
 
 
@@ -392,13 +413,59 @@ def _ensure_df(portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str
         return pd.DataFrame(portfolio)
     raise TypeError("portfolio must be a DataFrame, dict, or list[dict]")
 
+
+def apply_manual_trades(
+    cash: float,
+    portfolio_df: pd.DataFrame,
+    trades: Iterable[dict[str, Any]],
+) -> tuple[float, pd.DataFrame]:
+    """Execute a sequence of manual trades in order.
+
+    Parameters
+    ----------
+    cash:
+        Current cash balance.
+    portfolio_df:
+        Existing portfolio positions.
+    trades:
+        Iterable of trade dictionaries with the schema produced by the web UI
+        or LLM suggestions.
+
+    Returns
+    -------
+    cash, portfolio_df:
+        Updated cash and portfolio after applying the trades.
+    """
+
+    for trade in trades:
+        action = trade.get("action", "").lower()
+        ticker = str(trade.get("ticker", "")).upper()
+        shares = float(trade.get("shares", 0))
+        if action == "buy":
+            stop_loss = float(trade.get("stop_loss", 0.0))
+            cash, portfolio_df = log_manual_buy_moo(
+                ticker, shares, stop_loss, cash, portfolio_df
+            )
+        elif action == "sell":
+            price = float(trade.get("price", 0.0))
+            reason = trade.get("reason", "")
+            cash, portfolio_df = log_manual_sell(
+                price, shares, ticker, cash, portfolio_df, reason=reason, interactive=False
+            )
+    return cash, portfolio_df
+
 def process_portfolio(
     portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str, object]],
     cash: float,
+    manual_trades: list[dict[str, Any]] | None = None,
     interactive: bool = True,
 ) -> tuple[pd.DataFrame, float]:
+    """Update portfolio positions and cash based on manual or interactive trades."""
     today_iso = last_trading_date().date().isoformat()
     portfolio_df = _ensure_df(portfolio)
+
+    if manual_trades:
+        cash, portfolio_df = apply_manual_trades(cash, portfolio_df, manual_trades)
 
     results: list[dict[str, object]] = []
     total_value = 0.0
@@ -755,6 +822,78 @@ def log_manual_buy(
     print(f"Manual BUY LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
 
+
+def log_manual_buy_moo(
+    ticker: str,
+    shares: float,
+    stop_loss: float,
+    cash: float,
+    chatgpt_portfolio: pd.DataFrame,
+) -> tuple[float, pd.DataFrame]:
+    """Execute a manual market-on-open buy without interactive prompts."""
+    today = check_weekend()
+    s, e = trading_day_window()
+    fetch = download_price_data(ticker, start=s, end=e, auto_adjust=False, progress=False)
+    data = fetch.df
+    if data.empty:
+        print(f"MOO buy for {ticker} failed: no market data available (source={fetch.source}).")
+        return cash, chatgpt_portfolio
+
+    o = float(data["Open"].iloc[-1]) if "Open" in data else float(data["Close"].iloc[-1])
+    exec_price = round(o, 2)
+    notional = exec_price * shares
+    if notional > cash:
+        print(f"MOO buy for {ticker} failed: cost {notional:.2f} exceeds cash {cash:.2f}.")
+        return cash, chatgpt_portfolio
+
+    log = {
+        "Date": today,
+        "Ticker": ticker,
+        "Shares Bought": shares,
+        "Buy Price": exec_price,
+        "Cost Basis": notional,
+        "PnL": 0.0,
+        "Reason": "MANUAL BUY MOO - Filled",
+    }
+    if os.path.exists(TRADE_LOG_CSV):
+        df_log = pd.read_csv(TRADE_LOG_CSV)
+        if df_log.empty:
+            df_log = pd.DataFrame([log])
+        else:
+            df_log = pd.concat([df_log, pd.DataFrame([log])], ignore_index=True)
+    else:
+        df_log = pd.DataFrame([log])
+    df_log.to_csv(TRADE_LOG_CSV, index=False)
+
+    rows = chatgpt_portfolio.loc[chatgpt_portfolio["ticker"].astype(str).str.upper() == ticker.upper()]
+    if rows.empty:
+        new_trade = {
+            "ticker": ticker,
+            "shares": float(shares),
+            "stop_loss": float(stop_loss),
+            "buy_price": float(exec_price),
+            "cost_basis": float(notional),
+        }
+        if chatgpt_portfolio.empty:
+            chatgpt_portfolio = pd.DataFrame([new_trade])
+        else:
+            chatgpt_portfolio = pd.concat([chatgpt_portfolio, pd.DataFrame([new_trade])], ignore_index=True)
+    else:
+        idx = rows.index[0]
+        cur_shares = float(chatgpt_portfolio.at[idx, "shares"])
+        cur_cost = float(chatgpt_portfolio.at[idx, "cost_basis"])
+        new_shares = cur_shares + float(shares)
+        new_cost = cur_cost + float(notional)
+        avg_price = new_cost / new_shares if new_shares else 0.0
+        chatgpt_portfolio.at[idx, "shares"] = new_shares
+        chatgpt_portfolio.at[idx, "cost_basis"] = new_cost
+        chatgpt_portfolio.at[idx, "buy_price"] = avg_price
+        chatgpt_portfolio.at[idx, "stop_loss"] = float(stop_loss)
+
+    cash -= notional
+    print(f"Manual BUY MOO for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
+    return cash, chatgpt_portfolio
+
 def log_manual_sell(
     sell_price: float,
     shares_sold: float,
@@ -842,6 +981,30 @@ If this is a mistake, enter 1. """
     print(f"Manual SELL LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
 
+
+
+# ------------------------------
+# Trade log utilities
+# ------------------------------
+
+def load_trade_log(file: str | Path = TRADE_LOG_CSV) -> pd.DataFrame:
+    """Return the trade log as a DataFrame or an empty frame if missing."""
+    path = Path(file)
+    if not path.exists():
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "Ticker",
+                "Shares Bought",
+                "Shares Sold",
+                "Buy Price",
+                "Sell Price",
+                "Cost Basis",
+                "PnL",
+                "Reason",
+            ]
+        )
+    return pd.read_csv(path)
 
 
 # ------------------------------
