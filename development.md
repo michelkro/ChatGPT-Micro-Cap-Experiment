@@ -5,6 +5,7 @@ This document records major enhancements added while modernizing the ChatGPT Mic
 ## Architecture & Infrastructure
 - Introduced a Streamlit web interface with sidebar configuration and tabbed views for portfolio state, trade queue, performance and history.
 - Added download buttons for portfolio snapshots and trade logs plus an interactive Plotly chart benchmarking against the S&P 500.
+- Refactored `Generate_Graph.py` into a reusable `generate_graph` module and wired it into the app with a data download option.
 - Declared Streamlit and Plotly as dependencies and bundled them in `requirements.txt`.
 - Sidebar action to clear the price cache exposed by the trading engine.
 

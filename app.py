@@ -13,16 +13,16 @@ from __future__ import annotations
 
 import io
 import json
-import importlib.util
 import os
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Iterable
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from openai import OpenAI, APIError
+
+import generate_graph as gg
 
 from trading_script import (
     load_latest_portfolio_state,
@@ -245,35 +245,21 @@ if st.session_state["portfolio"]:
         end_str = st.text_input("End Date (YYYY-MM-DD)", "")
         baseline = st.number_input("Baseline Equity", value=100.0)
         if st.button("Generate Graph"):
-            spec = importlib.util.spec_from_file_location(
-                "generate_graph", Path("Start Your Own/Generate_Graph.py"),
-            )
-            gg = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(gg)
             start = pd.to_datetime(start_str) if start_str else None
             end = pd.to_datetime(end_str) if end_str else None
-            totals = gg.load_portfolio_details(
-                start, end, portfolio_csv=Path(st.session_state["portfolio_file"]),
+            chart_df = gg.prepare_performance_dataframe(
+                Path(st.session_state["portfolio_file"]), start, end, baseline
             )
-            norm_port = totals.copy()
-            norm_port["Total Equity"] = gg._normalize_to_start(
-                norm_port["Total Equity"], baseline
-            )
-            spx = gg.download_sp500(norm_port["Date"], baseline)
-            chart_df = pd.DataFrame(
-                {
-                    "Date": norm_port["Date"],
-                    "Portfolio": norm_port["Total Equity"],
-                    "S&P 500": spx["SPX Value"],
-                }
-            )
-            fig = px.line(
-                chart_df,
-                x="Date",
-                y=["Portfolio", "S&P 500"],
-                title="ChatGPT Portfolio vs. S&P 500",
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if chart_df.empty:
+                st.warning("No data available for selected range.")
+            else:
+                fig = gg.build_plotly_figure(chart_df, baseline)
+                st.plotly_chart(fig, use_container_width=True)
+                st.download_button(
+                    "Download Data",
+                    chart_df.to_csv(index=False),
+                    file_name="performance.csv",
+                )
 
     # History tab
     with tabs[3]:

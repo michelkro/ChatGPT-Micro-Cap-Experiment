@@ -20,7 +20,7 @@ streamlit run app.py
 3. **Generate Trades** – Click *Generate Trades* to request suggestions; review and edit the queue.
 4. **Run Daily Update** – Executes queued orders, updates prices and cash, and logs results.
 5. **Download Results** – Grab updated portfolio and trade log CSVs from the sidebar.
-6. **Performance Tab** – View an indexed equity curve versus the S&P 500.
+6. **Performance Tab** – Generate an indexed equity curve versus the S&P 500 and download the underlying data.
 7. **History Tab** – Inspect past executions via the trade log.
 
 ## 4. Data Files
