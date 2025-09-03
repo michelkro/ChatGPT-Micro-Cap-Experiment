@@ -16,7 +16,7 @@ streamlit run app.py
 
 ## 3. Using the App
 1. **Load Portfolio** – Browse to your `chatgpt_portfolio_update.csv` (defaults to `Start Your Own/`).
-2. **Provide API Key** – Enter an OpenAI key to enable LLM trade generation.
+2. **Provide API Keys** – Enter OpenAI and Alpha Vantage keys in the sidebar to enable LLM trades and the data fallback.
 3. **Generate Trades** – Click *Generate Trades* to request suggestions; review and edit the queue.
 4. **Run Daily Update** – Executes queued orders, updates prices and cash, and logs results.
 5. **Download Results** – Grab updated portfolio and trade log CSVs from the sidebar.
@@ -30,5 +30,6 @@ streamlit run app.py
 ## 5. Tips
 - Runs on any trading day; use the `ASOF_DATE` parameter in code for historical backfills.
 - Manual orders can be entered or edited before running the update.
+- Use **Clear Price Cache** in the sidebar if you suspect stale quotes.
 
 Enjoy experimenting!

@@ -5,7 +5,8 @@ experiment where an LLM made daily trade decisions based on a portfolio
 summary. Users can load their portfolio CSV, request trade proposals from
 OpenAI, review/modify the suggestions, and then run the daily update to
 apply them. A performance chart comparing the portfolio to the S&P 500 is
-also included.
+also included. The sidebar exposes configuration options, including a
+utility to clear cached price data used by the trading engine.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from trading_script import (
     load_trade_log,
     set_data_dir,
     set_alphavantage_key,
+    clear_price_cache,
 )
 
 # ------------------------------
@@ -136,6 +138,9 @@ with st.sidebar:
     if alpha_key_input:
         st.session_state["alpha_api_key"] = alpha_key_input
         set_alphavantage_key(alpha_key_input)
+    if st.button("Clear Price Cache"):
+        clear_price_cache()
+        st.success("Price cache cleared")
     if st.button("Load Portfolio"):
         file_path = Path(portfolio_file)
         if file_path.exists():

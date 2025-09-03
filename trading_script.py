@@ -30,6 +30,19 @@ import logging
 
 ALPHAVANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "")
 
+__all__ = [
+    "set_alphavantage_key",
+    "set_data_dir",
+    "load_latest_portfolio_state",
+    "process_portfolio",
+    "daily_results",
+    "load_trade_log",
+    "clear_price_cache",
+    "apply_manual_trades",
+    "last_trading_date",
+    "set_asof",
+]
+
 def set_alphavantage_key(key: str) -> None:
     """Set the API key used for Alpha Vantage requests."""
     global ALPHAVANTAGE_API_KEY
