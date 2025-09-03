@@ -72,7 +72,7 @@ This project is an attempt to find out — with transparency, data, and a real b
 - **ChatGPT-4** - AI-powered trading decision engine
 
 ## Key Features
-- **Robust Data Sources** - Yahoo Finance primary, Stooq fallback for reliability
+- **Robust Data Sources** - Yahoo Finance primary, Alpha Vantage fallback (requires API key)
 - **Automated Stop-Loss** - Automatic position management with configurable stop-losses
 - **Interactive Trading** - Market-on-Open (MOO) and limit order support
 - **Backtesting Support** - ASOF_DATE override for historical analysis
